@@ -1,0 +1,599 @@
+#Libraries
+#Set working directory
+
+install.packages("spgwr")
+install.packages("spatstat")
+install.packages("tmap")
+install.packages("gstat")
+install.packages("sf")
+install.packages("raster")
+install.packages("rgdal")
+install.packages("e1071")
+install.packages("spdep")
+install.packages("sp")
+install.packages("maptools")
+install.packages("spatialEco")
+
+
+library(spgwr)
+library(spatstat)
+library(tmap)
+library(gstat)
+library(sf)
+library(raster)
+library(rgdal)
+library(e1071)
+library(spdep)
+library(maptools)  # Used for conversion from SPDF to ppp
+library(sp)
+library(spatialEco)
+
+
+#Set working directory
+dir <- ("C:/Users/lande/Desktop/Last Semester/418/finalproj/Landen Matechuk/VRI/")
+setwd(dir)
+
+#Reading in elevation dataset
+elev <- readOGR("ElevSample.shp") #Read in data
+elev <- spTransform(elev, CRS("+init=epsg:26910"))
+
+
+#Reading in VRI data
+VRI <- readOGR("WatershedVRI.shp") #Read in shapefile
+VRI <- spTransform(VRI, CRS("+init=epsg:26910"))
+
+
+
+vriCleanCols <- c("FID_VEG_CO", "POLYGON_ID", "PROJ_AGE_1",
+                  "SITE_INDEX", "SPECIES__4", "SPECIES__5",
+                  "PROJ_HEI_1", "SPECIES_PC", "SPECIES__6",
+                  "VRI_LIVE_S", "BASAL_AREA", "WHOLE_STEM",
+                  "CROWN_CL_1")
+
+vriClean <- VRI[,vriCleanCols]
+
+
+newNames <- c("FID", "PolyID", "Stand_Age", "Site_Index",
+              "CoDom_Sp", "Dom_Sp", "Stand_HT", "DomSP_Perc", 
+              "CDomSP_Perc", "Stand_Dens", "Stand_BA", "Stand_StemBio", "Stand_CrownCl")
+
+colnames(vriClean@data) <- newNames
+head(vriClean@data)
+
+
+#Choose a Variable
+vriClean <- vriClean[!is.na(vriClean@data$Stand_StemBio), ]
+
+
+##Remove zeros from vri stand biomass
+vriClean <-  vriClean[which(vriClean$Stand_StemBio > 0), ]
+
+##### plot or view
+
+tmap_mode("view")
+tmap_mode("plot")
+
+tmaptools::palette_explorer() #Tool for selecting pallettes
+
+
+
+#Create choropleth map of height
+map_Bio <- tm_shape(vriClean) +
+  tm_polygons(col = "Stand_StemBio",
+              title = "Stemwood Biomass (tonnes/ha)",
+              style = "jenks",
+              palette = "viridis", n = 6) +
+  tm_legend(legend.position = c("LEFT", "BOTTOM"))
+
+map_Bio
+
+head(elev)
+
+tmaptools::palette_explorer() #Tool for selecting pallettes
+
+
+tm_shape(VRI) + 
+  tm_polygons() +
+  tm_shape(elev) +
+  tm_dots(col="grid_code", palette = "Greens", 
+          title="Points of Elevation Measurement", size=0.7) + 
+  tm_legend(legend.outside=TRUE)
+
+
+
+####descriptives for vri
+
+
+
+rangevri <-range(vriClean$Stand_StemBio, na.rm = TRUE) 
+meanvri <- mean(vriClean$Stand_StemBio, na.rm = TRUE)
+medianvri <- median(vriClean$Stand_StemBio, na.rm = TRUE)
+sdbiovri <- sd(vriClean$Stand_StemBio, na.rm = TRUE)
+skewvri <- skewness(vriClean$Stand_StemBio, na.rm = TRUE)
+kurtvri <- kurtosis(vriClean$Stand_StemBio, na.rm = TRUE)[1]
+CoVvri <- (sdbiovri / meanvri) * 100
+normtestvri <- shapiro.test(vriClean$Stand_StemBio)$p.value
+
+
+#####Descriptives of elev
+
+
+rangeelev <-range(elev$grid_code, na.rm = TRUE) #How many years of data is there?
+meanelev <- mean(elev$grid_code, na.rm = TRUE)
+medianelev <- median(elev$grid_code, na.rm = TRUE)
+sdbioelev <- sd(elev$grid_code, na.rm = TRUE)
+skewelev <- skewness(elev$grid_code, na.rm = TRUE)
+kurtelev <- kurtosis(elev$grid_code, na.rm = TRUE)[1]
+CoVelev <- (sdbioelev / meanelev) * 100
+normtestelev <- shapiro.test(elev$grid_code)$p.value
+
+
+
+###Histograms
+
+#Create and Print a histogram
+png("biomasshisto_2.png")
+hist(vriClean$Stand_StemBio, breaks = 60, main = "Histogram for Stemwood Biomass (tonnes/ha)", xlab = "Stemwood biomass (Tonnes/ha)") #Base R style
+dev.off()
+
+png("elevationhisto_2.png")
+hist(elev$grid_code, breaks = 60, main = "Height Above Sea Level (m)", xlab = "elevation") #Base R style
+dev.off()
+
+  
+
+#####spatial autocorrelation in forest variable
+
+######################## Biomass
+vri.nb <- poly2nb(vriClean)
+vri.net <- nb2lines(vri.nb, coords=coordinates(vriClean))
+crs(vri.net) <- crs(vriClean)
+
+tm_shape(vriClean) + tm_borders(col='lightgrey') + 
+  tm_shape(vri.net) + tm_lines(col='red')
+
+
+tm_shape(vriClean) + tm_borders(col='lightgrey') + 
+  tm_shape(vri.net) + tm_lines(col='blue', lwd = 2) 
+  
+
+
+#######Moran's I
+
+vri.lw <- nb2listw(vri.nb, zero.policy = TRUE, style = "W")
+print.listw(vri.lw, zero.policy = TRUE)
+
+########################
+mi <- moran.test(vriClean$Stand_StemBio, vri.lw, zero.policy = TRUE)
+mi
+
+
+moran.range <- function(lw) {
+  wmat <- listw2mat(lw)
+  return(range(eigen((wmat + t(wmat))/2)$values))
+}
+moran.range(vri.lw)
+
+mI <- mi$estimate[[1]]
+eI <- mi$estimate[[2]]
+var <- mi$estimate[[3]]
+
+#######COME BACK TO THIS
+
+z <- (mI-eI)/(sqrt(var))
+z  
+z  
+########################  
+lisa.test <- localmoran(vriClean$Stand_StemBio, vri.lw, zero.policy = TRUE)
+
+vriClean$Ii <- lisa.test[,1]
+vriClean$E.Ii<- lisa.test[,2]
+vriClean$Var.Ii<- lisa.test[,3]
+vriClean$Z.Ii<- lisa.test[,4]
+vriClean$P<- lisa.test[,5]
+########################
+tmaptools::palette_explorer() #Tool for selecting pallettes
+
+map_LISA <- tm_shape(vriClean) + 
+  tm_polygons(col = "Z.Ii", 
+              title = "Local Moran's I", 
+              style = "jenks",
+              palette = "viridis", n = 6, contrast = c(0.5, 1.0)) 
+
+
+map_LISA
+########################
+moran.plot(vriClean$Stand_CrownCl, vri.lw, zero.policy=TRUE, spChk=NULL, labels=NULL, xlab="Value of Polygon", 
+           ylab="Value of Neighbour", quiet=NULL)
+########################
+
+
+###spatial interpolation of elevation data
+
+################################################# COMEBACK TO THIS
+##Spatial Interpolation with IDW
+
+# Create an empty grid where n is the total number of cells
+grd <- as.data.frame(spsample(elev, "regular", n=50000))
+names(grd)       <- c("X", "Y")
+coordinates(grd) <- c("X", "Y")
+gridded(grd)     <- TRUE  # Create SpatialPixel object
+fullgrid(grd)    <- TRUE  # Create SpatialGrid object
+
+proj4string(grd) <- proj4string(elev)
+
+#IDW Interpolation CHANGE POWER IDP FUNCTION
+P.idw <- gstat::idw(grid_code ~ 1, elev, newdata=grd, idp=8)
+r       <- raster(P.idw)
+r.m     <- mask(r, VRI)
+
+tm_shape(r.m) + 
+  tm_raster(n=10,palette = "Spectral",
+            title="Elevation") + 
+  tm_shape(elev) + tm_dots(size=0.01) +
+  tm_legend(legend.outside=TRUE)
+
+#################################################
+# Leave-one-out validation routine
+IDW.out <- vector(length = length(elev))
+for (i in 1:length(elev)) {
+  IDW.out[i] <- idw(grid_code ~ 1, elev[-i,], elev[i,], idp=8)$var1.pred
+}
+
+# Plot the differences CHANGE POWER FUNCTION TO MAKE BETTER
+OP <- par(pty="s", mar=c(4,3,0,0))
+plot(IDW.out ~ elev$grid_code, asp=1, xlab="Observed", ylab="Predicted", pch=16,
+     col=rgb(0,0,0,0.5))
+abline(lm(IDW.out ~ elev$grid_code), col="red", lw=2,lty=2)
+abline(0,1)
+par(OP)
+sqrt( sum((IDW.out - elev$grid_code)^2) / length(elev))
+
+#################################################
+# Implementation of a jackknife technique to estimate a confidence interval at each unsampled point.
+# Create the interpolated surface
+img <- gstat::idw(grid_code~1, elev, newdata=grd, idp=8)
+n   <- length(elev)
+Zi  <- matrix(nrow = length(img$var1.pred), ncol = n)
+
+# Remove a point then interpolate (do this n times for each point)
+st <- stack()
+for (i in 1:n){
+  Z1 <- gstat::idw(grid_code~1, elev[-i,], newdata=grd, idp=8)
+  st <- addLayer(st,raster(Z1,layer=1))
+  # Calculated pseudo-value Z at j
+  Zi[,i] <- n * img$var1.pred - (n-1) * Z1$var1.pred
+}
+
+# Jackknife estimator of parameter Z at location j
+Zj <- as.matrix(apply(Zi, 1, sum, na.rm=T) / n )
+
+# Compute (Zi* - Zj)^2
+c1 <- apply(Zi,2,'-',Zj)            # Compute the difference
+c1 <- apply(c1^2, 1, sum, na.rm=T ) # Sum the square of the difference
+
+# Compute the confidence interval
+CI <- sqrt( 1/(n*(n-1)) * c1)
+
+# Create (CI / interpolated value) raster
+img.sig   <- img
+img.sig$v <- CI /img$var1.pred 
+
+# Clip the confidence raster to Southern California
+r <- raster(img.sig, layer="v")
+r.m.conf <- mask(r, VRI)
+
+# Plot the map
+tm_shape(r.m.conf) + tm_raster(n=7,title="95% Confidence Interval in Metres") +
+  tm_shape(elev) + tm_dots(size=0.2) +
+  tm_legend(legend.outside=TRUE)
+
+elev
+
+###Combine Elevation and Stand Stem Biomass 
+
+#Convert your interpolation into a raster and map it: COMEBACK TO THIS
+r.elev_interp <- raster(r.m)
+surfaceMap <- tm_shape(vriClean) + 
+  tm_raster(n=5,palette = "Greens",
+            title="Elev (m)") +
+  tm_shape(elev) + tm_dots(size=0.2)+
+  tm_legend(legend.outside=TRUE)
+
+surfaceMap
+
+#If you have too many cells, 
+#you can reduce the number by aggregating values
+#agg <- aggregate(yourRasterFromKriging, fact=??, fun=mean)
+
+#Extract average elev for each polygon
+vriClean$Elev <- extract(r, vriClean, fun = mean)[,1]
+
+vriClean$Elev <- raster::extract(r.m, vriClean, fun = mean)[,1]
+
+
+###point pattern on our point sample ANALTSIS OF THE SAMPLING STRUCTURE OF POINTS
+
+
+#intersect the two datasets
+elevpoints <- raster::intersect(elev, vriClean)
+plot(elevpoints)
+
+
+
+kma <- elevpoints
+kma$x <- coordinates(kma)[,1]
+kma$y <- coordinates(kma)[,2]
+
+#check for and remove duplicated points
+#first, finds zero distance among points to see if there are any duplicates
+zd <- zerodist(kma)
+zd
+
+#if there are duplicates, remove them
+kma <- remove.duplicates(kma)
+
+#create an "extent" object which can be used to create the observation window for spatstat
+kma.ext <- as.matrix(extent(kma))
+
+#observation window
+window <- as.owin(list(xrange = kma.ext[1,], yrange = kma.ext[2,]))
+
+#create ppp oject from spatstat
+kma.ppp <- ppp(x = kma$x, y = kma$y, window = window)
+
+
+
+
+
+#####
+##QUADRAT ANALYSIS
+##First, determine the number of qusdrats 
+quads <- 10
+
+qcount <- quadratcount(kma.ppp, nx = quads, ny = quads)
+
+png("quadelev1.png")
+plot(kma.ppp, pch = "+", cex = 0.5)
+plot(qcount, add = T, col = "red")
+dev.off()
+
+qcount.df <- as.data.frame(qcount)
+
+##Second, count the number of quadrats with a distinct number of points.
+qcount.df <- plyr::count(qcount.df,'Freq')
+
+##Change the column names so that x=number of points and f=frequency of quadrats with x point.
+colnames(qcount.df) <- c("x","f")
+
+#### Build equations from slides
+
+sum.f.x2 <- sum(qcount.df$f*qcount.df$x^2)
+
+M <- sum(qcount.df$f)
+
+N <- sum(qcount.df$f*qcount.df$x)
+
+sum.fx.2 <- sum(qcount.df$f*qcount.df$x)^2
+
+VAR <- (sum.f.x2 - (sum.fx.2/M))/(M-1)
+
+MEAN <- N/M
+
+VMR <- VAR/MEAN
+
+##Finally, perform the test statistic to test for the existence of a random spatial pattern.
+chi.square = VMR*(M-1)
+p = 1 - pchisq(chi.square, (M - 1))
+
+######K function
+#####
+##K-FUNCTION 
+#basic k-function
+k.fun <- Kest(kma.ppp, correction = "Ripley")
+plot(k.fun)
+
+#use simulation to test the point pattern against CSR
+k.fun.e <- envelope(kma.ppp, Kest, nsim = 99, correction = "Ripley")
+png("elevk1.png")
+plot(k.fun.e) 
+dev.off()
+
+#####
+##Nearest Neighbour Distance
+###NEAREST NEIGHBOUR
+
+nearestNeighbour <- nndist(kma.ppp)
+
+
+##Convert the nearestNeighbor object into a dataframe.
+nearestNeighbour=as.data.frame(as.numeric(nearestNeighbour))
+
+##Change the column name to "Distance"
+colnames(nearestNeighbour) = "Distance"
+
+
+##Calculate the nearest neighbor statistic to test for a random spatial distribution.
+#mean nearest neighbour
+
+nnd = sum(nearestNeighbour)/nrow(nearestNeighbour)
+
+#Build equations from slides
+
+gArea(Elev)
+
+studyArea <- gArea(vriClean)
+pointDensity <- N/studyArea
+
+#####gArea rgeos
+
+
+r.nnd = 1/(2*(sqrt(pointDensity)))
+
+d.nnd = 1.07453/(sqrt(pointDensity))
+
+R = nnd/r.nnd
+
+SE.NND <- .26136/ (sqrt(N*pointDensity))
+
+z = (nnd-r.nnd)/SE.NND
+
+View(kma.ppp)
+
+
+
+##map it extract to polygons
+
+###linear regression
+
+######Linear Regression##########
+#Let's say your dataset with both Elev and Height are stored in a dataset called VRI.
+#Plot Height and Elev from the VRI dataset you created
+plot(vriClean$Stand_StemBio ~ vriClean$Elev)
+
+#Notice that there are a lot of 0's in this dataset. If you decide to remove them, use the following line:
+VRI.no0 <-  vriClean[which(vriClean$Stand_StemBio > 0), ]
+
+
+#Now plot the data again
+plot(VRI.no0$Stand_StemBio ~ VRI.no0$Elev)
+
+#Perform a linear regression on the two variables. You should decide which one is dependent.
+lm.model <- lm(VRI.no0$Stand_StemBio ~ VRI.no0$Stand_StemBio)
+
+#Add the regression model to the plot you created
+plot(VRI.no0$Stand_StemBio ~ VRI.no0$Elev)
+abline(lm.model, col = "red")
+
+#Get the summary of the results
+summary(lm.model)
+
+#add the fitted values to your spatialpolygon dataframe
+VRI.no0$predictlm <- lm.model$fitted.values
+
+#You want to determine if the model residuals are spatially clustered. 
+#add the residuals to your spatialpolygon dataframe
+VRI.no0$residuals <- residuals.lm(lm.model)
+
+#Observe the result to make sure it looks correct
+head(VRI.no0@data)
+
+#Now, create choropleth map of residuals
+map_resid <- tm_shape(VRI.no0) +
+  tm_polygons(col = "residuals",
+              title = "Stand Biomass Residuals",
+              style = "jenks",
+              palette = "viridis", n = 6)
+
+map_resid
+
+###Global Moran's I 
+
+########################
+vri.GLB <- poly2nb(VRI.no0)
+vri.GLB1 <- nb2lines(vri.GLB, coords=coordinates(VRI.no0))
+crs(vri.GLB1) <- crs(VRI.no0)
+
+tm_shape(VRI.no0) + tm_borders(col='lightgrey') + 
+  tm_shape(vri.GLB1) + tm_lines(col='red')
+
+tm_shape(VRI.no0) + tm_borders(col='lightgrey') + 
+  tm_shape(vri.GLB1) + tm_lines(col='blue', lwd = 2) 
+  
+
+########################
+
+vri.lwelev <- nb2listw(vri.GLB, zero.policy = TRUE, style = "W")
+print.listw(vri.lwelev, zero.policy = TRUE)
+
+########################
+head(vri.lwelev)
+########################
+mi3 <- moran.test(VRI.no0$residuals, vri.lwelev, zero.policy = TRUE)
+mi3
+
+head(vriClean)
+
+moran.range <- function(lw) {
+  wmat <- listw2mat(lw)
+  return(range(eigen((wmat + t(wmat))/2)$values))
+}
+moran.range(vri.lwelev)
+
+mI <- mi2$estimate[[1]]
+eI <- mi2$estimate[[2]]
+var <- mi2$estimate[[3]]
+
+#######COME BACK TO THIS
+
+z <- (mI-eI)/(sqrt(var))
+z  
+
+
+z <- (mI-eI)/(sqrt(var))
+z  
+
+
+
+
+
+
+###geographically weighted regression
+
+####Geographically Weighted Regression
+#Let's say you are continuing with 
+#your data from the regression analysis. 
+#The first thing you need to do is to add the 
+#polygon coordinates to the spatialpolygondataframe.
+#You can obtain the coordinates using the 
+#"coordinates" function from the sp library
+
+head(vriClean)
+sp.na.omit(vriClean, Elev = NULL, margin = 1)
+
+
+VRI.no0.coords <- sp::coordinates(vriClean)
+#Observe the result:
+head(VRI.no0.coords)
+#Now add the coordinates back to the spatialpolygondataframe
+vri.w0$X <- VRI.no0.coords[,1]
+vri.w0$Y <- VRI.no0.coords[,2]
+head(VRI.no0.coords)
+###Determine the bandwidth for GWR: this will take a while
+GWRbandwidth <- gwr.sel(vriClean$Stand_StemBio ~ vriClean$Elev, 
+                        data=vriClean, coords=cbind(vriClean$x,vriClean$y),adapt=T) 
+(View(vriClean))
+
+###Perform GWR on the two variables with the bandwidth determined above
+###This will take a looooooong while
+gwr.model = gwr(vriClean$Stand_StemBio ~ vriClean$Elev, 
+                data=vriClean, coords=cbind(vriClean$X,vriClean$Y), 
+                adapt=GWRbandwidth, hatmatrix=TRUE, se.fit=TRUE) 
+
+#Print the results of the model
+gwr.model
+
+#Look at the results in detail
+results<-as.data.frame(gwr.model$SDF)
+head(results)
+
+#Now for the magic. Let's add our local r-square values to the map
+vriClean$localr <- results$localR2
+
+#Create choropleth map of r-square values
+map_r2 <- tm_shape(vriClean) +
+  tm_polygons(col = "localr",
+              title = "R2 values",
+              style = "jenks",
+              palette = "viridis", n = 6)
+map_r2
+
+#Time for more magic. Let's map the coefficients
+vriClean$coeff <- results$vriClean
+#Create choropleth map of the coefficients
+map_coef <- tm_shape(vriClean) +
+  tm_polygons(col = "coeff",
+              title = "Coefficients",
+              style = "jenks",
+              palette = "viridis", n = 6)
+map_coef
